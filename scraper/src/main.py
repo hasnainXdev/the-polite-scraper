@@ -8,10 +8,13 @@ import time
 from pathlib import Path
 
 import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 BASE_URL = "https://books.toscrape.com"
 ROBOTS_URL = f"{BASE_URL}/robots.txt"
 CATALOGUE_URL = f"{BASE_URL}/catalogue/page-1.html"
+SCOPE_PAGE_LIMIT = 3
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 USER_AGENT = "FlyRankInternshipA9/1.0 (+https://github.com/<my-username>/<repo>)"
 REQUEST_TIMEOUT = 5
@@ -68,18 +71,47 @@ def fetch_robots() -> None:
         raise RuntimeError(f"failed fetch: GET {ROBOTS_URL} -> HTTP {resp.status_code}")
 
 
-def fetch_catalogue_page_1() -> None:
-    content, from_cache = fetch_page(CATALOGUE_URL, "catalogue-page-1")
-    size = len(content.encode("utf-8"))
-    verb = "CACHE HIT" if from_cache else "FETCH"
-    print(f"{verb} catalogue-page-1 (size={size})")
+def cache_name_for_page(url: str) -> str:
+    """Map a catalogue page URL to its cache file stem, e.g. 'catalogue-page-1'."""
+    name = Path(url).name
+    return f"catalogue-{name[:-len('.html')]}"
+
+
+def discover_catalogue() -> tuple[int, int, list[str]]:
+    """Follow 'next' links within the declared 3-page scope to find book URLs.
+
+    Returns (page_count, discovered_links, unique_book_urls). Every page is still
+    discovered from the site's own 'next' link — the scope limit only bounds the
+    crawl to the first three catalogue pages declared in the target classification.
+    """
+    page_urls = [CATALOGUE_URL]
+    book_urls: set[str] = set()
+    discovered = 0
+    while True:
+        page_url = page_urls[-1]
+        cache_name = cache_name_for_page(page_url)
+        content, from_cache = fetch_page(page_url, cache_name)
+        size = len(content.encode("utf-8"))
+        verb = "CACHE HIT" if from_cache else "FETCH"
+        print(f"{verb} {cache_name} (size={size})")
+        soup = BeautifulSoup(content, "html.parser")
+        links = soup.select("article.product_pod h3 a[href]")
+        discovered += len(links)
+        for link in links:
+            book_urls.add(urljoin(page_url, link["href"]))
+        next_link = soup.select_one("li.next a[href]")
+        if next_link is None or len(page_urls) >= SCOPE_PAGE_LIMIT:
+            break
+        page_urls.append(urljoin(page_url, next_link["href"]))
+    return len(page_urls), discovered, sorted(book_urls)
 
 
 def main() -> None:
     print("Stage 0: check before you collect")
     fetch_robots()
-    print("Stage 1: fetch once, cache once")
-    fetch_catalogue_page_1()
+    print("Stage 2: find all three pages")
+    page_count, discovered, book_urls = discover_catalogue()
+    print(f"catalogue_pages={page_count} discovered={discovered} unique_urls={len(book_urls)}")
 
 
 if __name__ == "__main__":
