@@ -11,6 +11,7 @@ import requests
 
 BASE_URL = "https://books.toscrape.com"
 ROBOTS_URL = f"{BASE_URL}/robots.txt"
+CATALOGUE_URL = f"{BASE_URL}/catalogue/page-1.html"
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 USER_AGENT = "FlyRankInternshipA9/1.0 (+https://github.com/<my-username>/<repo>)"
 REQUEST_TIMEOUT = 5
@@ -67,9 +68,18 @@ def fetch_robots() -> None:
         raise RuntimeError(f"failed fetch: GET {ROBOTS_URL} -> HTTP {resp.status_code}")
 
 
+def fetch_catalogue_page_1() -> None:
+    content, from_cache = fetch_page(CATALOGUE_URL, "catalogue-page-1")
+    size = len(content.encode("utf-8"))
+    verb = "CACHE HIT" if from_cache else "FETCH"
+    print(f"{verb} catalogue-page-1 (size={size})")
+
+
 def main() -> None:
     print("Stage 0: check before you collect")
     fetch_robots()
+    print("Stage 1: fetch once, cache once")
+    fetch_catalogue_page_1()
 
 
 if __name__ == "__main__":
