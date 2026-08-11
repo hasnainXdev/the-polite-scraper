@@ -4,12 +4,14 @@
 Single entry point. Target: https://books.toscrape.com (public scraping sandbox).
 """
 
+import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
 BASE_URL = "https://books.toscrape.com"
 ROBOTS_URL = f"{BASE_URL}/robots.txt"
@@ -45,6 +47,7 @@ def fetch_page(url: str, cache_name: str) -> tuple[str, bool]:
     resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
     if resp.status_code != 200:
         raise RuntimeError(f"failed fetch: GET {url} -> HTTP {resp.status_code}")
+    resp.encoding = "utf-8"
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(resp.text, encoding="utf-8")
     return resp.text, False
@@ -77,15 +80,17 @@ def cache_name_for_page(url: str) -> str:
     return f"catalogue-{name[:-len('.html')]}"
 
 
-def discover_catalogue() -> tuple[int, int, list[str]]:
+def discover_catalogue() -> tuple[int, int, dict[str, str]]:
     """Follow 'next' links within the declared 3-page scope to find book URLs.
 
-    Returns (page_count, discovered_links, unique_book_urls). Every page is still
-    discovered from the site's own 'next' link — the scope limit only bounds the
-    crawl to the first three catalogue pages declared in the target classification.
+    Returns (page_count, discovered_links, book_pages) where book_pages maps each
+    unique book URL to the catalogue page it was found on (its source_page). Every
+    page is discovered from the site's own 'next' link — the scope limit only
+    bounds the crawl to the first three catalogue pages declared in the target
+    classification.
     """
     page_urls = [CATALOGUE_URL]
-    book_urls: set[str] = set()
+    book_pages: dict[str, str] = {}
     discovered = 0
     while True:
         page_url = page_urls[-1]
@@ -98,20 +103,75 @@ def discover_catalogue() -> tuple[int, int, list[str]]:
         links = soup.select("article.product_pod h3 a[href]")
         discovered += len(links)
         for link in links:
-            book_urls.add(urljoin(page_url, link["href"]))
+            book_urls = urljoin(page_url, link["href"])
+            book_pages.setdefault(book_urls, page_url)
         next_link = soup.select_one("li.next a[href]")
         if next_link is None or len(page_urls) >= SCOPE_PAGE_LIMIT:
             break
         page_urls.append(urljoin(page_url, next_link["href"]))
-    return len(page_urls), discovered, sorted(book_urls)
+    return len(page_urls), discovered, book_pages
+
+
+def cache_name_for_book(url: str) -> str:
+    """Map a book detail URL to its cache file stem, e.g. 'a-light-in-the-attic_1000'."""
+    return urlparse(url).path.rstrip("/").split("/")[-2]
+
+
+def extract_record(book_url: str, source_page: str, content: str) -> dict:
+    soup = BeautifulSoup(content, "html.parser")
+    product_main = soup.select_one("div.product_main")
+
+    title = product_main.h1.get_text(strip=True) if product_main and product_main.h1 else None
+    price_el = product_main.select_one("p.price_color") if product_main else None
+    availability_el = product_main.select_one("p.instock.availability") if product_main else None
+    rating_el = product_main.select_one("p.star-rating") if product_main else None
+
+    rating_text = None
+    if rating_el is not None:
+        for cls in rating_el.get("class", []):
+            if cls != "star-rating":
+                rating_text = cls
+
+    description = None
+    description_header = soup.select_one("div#product_description")
+    if description_header is not None:
+        description_para = description_header.find_next_sibling("p")
+        if description_para is not None:
+            description = description_para.get_text(strip=True)
+
+    return {
+        "title": title,
+        "product_url": book_url,
+        "price_text": price_el.get_text(strip=True) if price_el is not None else None,
+        "availability_text": availability_el.get_text(" ", strip=True) if availability_el is not None else None,
+        "rating_text": rating_text,
+        "description": description,
+        "source_page": source_page,
+        "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def extract_records(book_pages: dict[str, str]) -> list[dict]:
+    records = []
+    for book_url, source_page in book_pages.items():
+        cache_name = cache_name_for_book(book_url)
+        content, from_cache = fetch_page(book_url, cache_name)
+        size = len(content.encode("utf-8"))
+        verb = "CACHE HIT" if from_cache else "FETCH"
+        print(f"{verb} {cache_name} (size={size})")
+        records.append(extract_record(book_url, source_page, content))
+    return records
 
 
 def main() -> None:
     print("Stage 0: check before you collect")
     fetch_robots()
-    print("Stage 2: find all three pages")
-    page_count, discovered, book_urls = discover_catalogue()
-    print(f"catalogue_pages={page_count} discovered={discovered} unique_urls={len(book_urls)}")
+    print("Stage 3: extract the raw records")
+    page_count, discovered, book_pages = discover_catalogue()
+    print(f"catalogue_pages={page_count} discovered={discovered} unique_urls={len(book_pages)}")
+    records = extract_records(book_pages)
+    print(json.dumps(records[0], ensure_ascii=False, indent=2))
+    print(f"detail_pages={len(records)}")
 
 
 if __name__ == "__main__":
