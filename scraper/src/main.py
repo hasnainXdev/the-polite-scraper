@@ -5,6 +5,7 @@ Single entry point. Target: https://books.toscrape.com (public scraping sandbox)
 """
 
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,11 +13,25 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from pydantic import BaseModel, ValidationError
 
 BASE_URL = "https://books.toscrape.com"
 ROBOTS_URL = f"{BASE_URL}/robots.txt"
 CATALOGUE_URL = f"{BASE_URL}/catalogue/page-1.html"
 SCOPE_PAGE_LIMIT = 3
+OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
+
+
+class BookRecord(BaseModel):
+    title: str
+    product_url: str
+    price_text: str
+    price_gbp: float
+    availability_text: str
+    rating_text: str
+    description: str | None = None
+    source_page: str
+    fetched_at: str
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 USER_AGENT = "FlyRankInternshipA9/1.0 (+https://github.com/<my-username>/<repo>)"
 REQUEST_TIMEOUT = 5
@@ -163,15 +178,48 @@ def extract_records(book_pages: dict[str, str]) -> list[dict]:
     return records
 
 
+def normalize_record(raw: dict) -> dict:
+    """Add numeric price_gbp alongside the raw price_text; never discard raw values."""
+    price_gbp = None
+    if raw.get("price_text"):
+        match = re.search(r"\d+(?:\.\d+)?", raw["price_text"])
+        if match is not None:
+            price_gbp = float(match.group(0))
+    return {**raw, "price_gbp": price_gbp}
+
+
+def validate_records(raw_records: list[dict]) -> tuple[list[dict], list[dict]]:
+    books, errors = [], []
+    for raw in raw_records:
+        try:
+            record = BookRecord.model_validate(raw)
+        except ValidationError as exc:
+            errors.append({"reason": exc.errors(), "record": raw})
+        else:
+            books.append(record.model_dump())
+    return books, errors
+
+
+def write_outputs(books: list[dict], errors: list[dict]) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    (OUTPUT_DIR / "books.json").write_text(
+        json.dumps(books, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    (OUTPUT_DIR / "errors.json").write_text(
+        json.dumps(errors, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def main() -> None:
     print("Stage 0: check before you collect")
     fetch_robots()
-    print("Stage 3: extract the raw records")
+    print("Stage 4: clean, validate, store")
     page_count, discovered, book_pages = discover_catalogue()
     print(f"catalogue_pages={page_count} discovered={discovered} unique_urls={len(book_pages)}")
-    records = extract_records(book_pages)
-    print(json.dumps(records[0], ensure_ascii=False, indent=2))
-    print(f"detail_pages={len(records)}")
+    raw_records = extract_records(book_pages)
+    books, errors = validate_records([normalize_record(r) for r in raw_records])
+    write_outputs(books, errors)
+    print(f"valid={len(books)} invalid={len(errors)} -> output/books.json")
 
 
 if __name__ == "__main__":
