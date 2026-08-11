@@ -132,7 +132,7 @@ def discover_catalogue() -> tuple[int, int, dict[str, str]]:
 
     Returns (page_count, discovered_links, book_pages) where book_pages maps each
     unique book URL to the catalogue page it was found on (its source_page). Every
-    page is discovered from the site's own 'next' link — the scope limit only
+    page is discovered from the site's own 'next' link; the scope limit only
     bounds the crawl to the first three catalogue pages declared in the target
     classification.
     """
