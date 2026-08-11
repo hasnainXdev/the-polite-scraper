@@ -75,8 +75,8 @@ Real output from a full run (all 60 pages served from cache):
 
 ```json
 {
-  "start_time": "2026-08-11T12:11:56Z",
-  "duration_seconds": 0.766,
+  "start_time": "2026-08-11T12:32:52Z",
+  "duration_seconds": 0.899,
   "pages_fetched": 63,
   "cache_hits": 63,
   "valid_records": 60,
